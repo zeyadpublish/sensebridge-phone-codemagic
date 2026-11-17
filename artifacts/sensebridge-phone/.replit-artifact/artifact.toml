@@ -1,0 +1,24 @@
+kind = "mobile"
+previewPath = "/sensebridge-phone/"
+title = "SenseBridge Phone"
+description = "A cross-platform Android and iPhone companion for pairing with one private SenseBridge wearable account, testing local vibration, and receiving clearly labeled alert notifications."
+version = "1.0.0"
+id = "artifacts/sensebridge-phone"
+router = "expo-domain"
+
+[[services]]
+name = "expo"
+ensurePreviewReachable = "/status"
+paths = [ "/sensebridge-phone/" ]
+localPort = 18176
+
+[services.development]
+run = "pnpm --filter @workspace/sensebridge-phone run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/sensebridge-phone", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/sensebridge-phone", "run", "serve" ]
+
+[services.env]
+PORT = "18176"
+BASE_PATH = "/sensebridge-phone/"

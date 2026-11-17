@@ -1,0 +1,58 @@
+workflows:
+  sensebridge-android-release:
+    name: SenseBridge Android Release
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      node: 24.22.1
+      java: 17
+      android_signing:
+        - sensebridge_android
+      groups:
+        - sensebridge_android_release
+    scripts:
+      - name: Install workspace dependencies
+        script: |
+          set -eu
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: Prepare Android release configuration
+        script: |
+          set -eu
+          cd artifacts/sensebridge-phone
+          node <<'NODE'
+          const fs = require('node:fs');
+          for (const key of ['EXPO_PUBLIC_DOMAIN', 'EXPO_PUBLIC_EAS_PROJECT_ID', 'ANDROID_PACKAGE_NAME', 'GOOGLE_SERVICES_JSON_BASE64', 'BUILD_NUMBER']) {
+            if (!process.env[key]?.trim()) throw new Error(`${key} is required`);
+          }
+          const { ANDROID_PACKAGE_NAME: packageName, BUILD_NUMBER: buildNumber } = process.env;
+          if (!/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(packageName)) throw new Error('Invalid ANDROID_PACKAGE_NAME');
+          if (!/^[1-9]\d*$/.test(buildNumber) || Number(buildNumber) > 2100000000) throw new Error('Invalid Android build number');
+          const firebaseConfig = Buffer.from(process.env.GOOGLE_SERVICES_JSON_BASE64, 'base64');
+          let firebase;
+          try { firebase = JSON.parse(firebaseConfig.toString('utf8')); }
+          catch { throw new Error('GOOGLE_SERVICES_JSON_BASE64 must decode to valid Firebase JSON'); }
+          if (!firebase.client?.some(client => client.client_info?.android_client_info?.package_name === packageName)) {
+            throw new Error('Firebase Android package name does not match ANDROID_PACKAGE_NAME');
+          }
+          fs.writeFileSync('google-services.json', firebaseConfig, { mode: 0o600 });
+          const config = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+          config.expo.android = { ...config.expo.android, package: packageName, versionCode: Number(buildNumber), googleServicesFile: './google-services.json' };
+          fs.writeFileSync('app.json', JSON.stringify(config, null, 2) + '\n');
+          NODE
+          pnpm exec expo prebuild --platform android --no-install
+      - name: Build and verify signed AAB
+        script: |
+          set -eu
+          : "${CM_KEYSTORE_PATH:?}" "${CM_KEYSTORE_PASSWORD:?}" "${CM_KEY_ALIAS:?}" "${CM_KEY_PASSWORD:?}"
+          cd artifacts/sensebridge-phone/android
+          ./gradlew --no-daemon :app:bundleRelease \
+            -Pandroid.injected.signing.store.file="$CM_KEYSTORE_PATH" \
+            -Pandroid.injected.signing.store.password="$CM_KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$CM_KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$CM_KEY_PASSWORD"
+          bundle=app/build/outputs/bundle/release/app-release.aab
+          test -s "$bundle"
+          jarsigner -verify "$bundle" | grep -F 'jar verified.'
+    artifacts:
+      - artifacts/sensebridge-phone/android/app/build/outputs/bundle/release/*.aab
