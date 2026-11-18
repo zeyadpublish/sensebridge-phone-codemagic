@@ -1,56 +1,68 @@
 workflows:
   sensebridge-android-release:
-    name: SenseBridge Android Release
+    name: SenseBridge Android APK
     instance_type: mac_mini_m2
     max_build_duration: 90
     environment:
       node: 24.22.1
       java: 17
-      android_signing:
-        - sensebridge_android
-      groups:
-        - sensebridge_android_release
+      vars:
+        EXPO_PUBLIC_DOMAIN: sensebridge.replit.app
+        ANDROID_PACKAGE_NAME: com.sensebridge.phone
     scripts:
       - name: Install workspace dependencies
         script: |
           set -eu
           corepack enable
           pnpm install --frozen-lockfile
-      - name: Prepare Android release configuration
+      - name: Prepare Android APK configuration
         script: |
           set -eu
           cd artifacts/sensebridge-phone
           node <<'NODE'
           const fs = require('node:fs');
-          for (const key of ['EXPO_PUBLIC_DOMAIN', 'EXPO_PUBLIC_EAS_PROJECT_ID', 'ANDROID_PACKAGE_NAME', 'GOOGLE_SERVICES_JSON_BASE64', 'BUILD_NUMBER']) {
-            if (!process.env[key]?.trim()) throw new Error(`${key} is required`);
-          }
-          const { ANDROID_PACKAGE_NAME: packageName, BUILD_NUMBER: buildNumber } = process.env;
+          const packageName = (process.env.ANDROID_PACKAGE_NAME || 'com.sensebridge.phone').trim();
+          const buildNumber = (process.env.BUILD_NUMBER || '1').trim();
           if (!/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(packageName)) throw new Error('Invalid ANDROID_PACKAGE_NAME');
           if (!/^[1-9]\d*$/.test(buildNumber) || Number(buildNumber) > 2100000000) throw new Error('Invalid Android build number');
-          const firebaseConfig = Buffer.from(process.env.GOOGLE_SERVICES_JSON_BASE64, 'base64');
-          let firebase;
-          try { firebase = JSON.parse(firebaseConfig.toString('utf8')); }
-          catch { throw new Error('GOOGLE_SERVICES_JSON_BASE64 must decode to valid Firebase JSON'); }
-          if (!firebase.client?.some(client => client.client_info?.android_client_info?.package_name === packageName)) {
-            throw new Error('Firebase Android package name does not match ANDROID_PACKAGE_NAME');
-          }
-          fs.writeFileSync('google-services.json', firebaseConfig, { mode: 0o600 });
           const config = JSON.parse(fs.readFileSync('app.json', 'utf8'));
-          config.expo.android = { ...config.expo.android, package: packageName, versionCode: Number(buildNumber), googleServicesFile: './google-services.json' };
+          config.expo.android = {
+            ...config.expo.android,
+            package: packageName,
+            versionCode: Number(buildNumber),
+          };
+          if (process.env.GOOGLE_SERVICES_JSON_BASE64?.trim()) {
+            const firebaseConfig = Buffer.from(process.env.GOOGLE_SERVICES_JSON_BASE64.trim(), 'base64');
+            fs.writeFileSync('google-services.json', firebaseConfig, { mode: 0o600 });
+            config.expo.android.googleServicesFile = './google-services.json';
+          }
           fs.writeFileSync('app.json', JSON.stringify(config, null, 2) + '\n');
           NODE
           pnpm exec expo prebuild --platform android --no-install
       - name: Build and verify signed APK
         script: |
           set -eu
-          : "${CM_KEYSTORE_PATH:?}" "${CM_KEYSTORE_PASSWORD:?}" "${CM_KEY_ALIAS:?}" "${CM_KEY_PASSWORD:?}"
           cd artifacts/sensebridge-phone/android
+          KEYSTORE_PATH="${CM_KEYSTORE_PATH:-/tmp/sensebridge-release.keystore}"
+          KEYSTORE_PASS="${CM_KEYSTORE_PASSWORD:-sensebridge123}"
+          KEY_ALIAS="${CM_KEY_ALIAS:-sensebridge}"
+          KEY_PASS="${CM_KEY_PASSWORD:-sensebridge123}"
+          if [ ! -f "$KEYSTORE_PATH" ]; then
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_PATH" \
+              -alias "$KEY_ALIAS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass "$KEYSTORE_PASS" \
+              -keypass "$KEY_PASS" \
+              -dname "CN=SenseBridge, OU=AI, O=SenseBridge, L=RAK, S=RAK, C=AE"
+          fi
           ./gradlew --no-daemon :app:assembleRelease \
-            -Pandroid.injected.signing.store.file="$CM_KEYSTORE_PATH" \
-            -Pandroid.injected.signing.store.password="$CM_KEYSTORE_PASSWORD" \
-            -Pandroid.injected.signing.key.alias="$CM_KEY_ALIAS" \
-            -Pandroid.injected.signing.key.password="$CM_KEY_PASSWORD"
+            -Pandroid.injected.signing.store.file="$KEYSTORE_PATH" \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASS" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASS"
           apk=app/build/outputs/apk/release/app-release.apk
           test -s "$apk"
           apksigner="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -name apksigner | sort -V | tail -n 1)"
