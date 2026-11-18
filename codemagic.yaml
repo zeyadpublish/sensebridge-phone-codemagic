@@ -41,18 +41,19 @@ workflows:
           fs.writeFileSync('app.json', JSON.stringify(config, null, 2) + '\n');
           NODE
           pnpm exec expo prebuild --platform android --no-install
-      - name: Build and verify signed AAB
+      - name: Build and verify signed APK
         script: |
           set -eu
           : "${CM_KEYSTORE_PATH:?}" "${CM_KEYSTORE_PASSWORD:?}" "${CM_KEY_ALIAS:?}" "${CM_KEY_PASSWORD:?}"
           cd artifacts/sensebridge-phone/android
-          ./gradlew --no-daemon :app:bundleRelease \
+          ./gradlew --no-daemon :app:assembleRelease \
             -Pandroid.injected.signing.store.file="$CM_KEYSTORE_PATH" \
             -Pandroid.injected.signing.store.password="$CM_KEYSTORE_PASSWORD" \
             -Pandroid.injected.signing.key.alias="$CM_KEY_ALIAS" \
             -Pandroid.injected.signing.key.password="$CM_KEY_PASSWORD"
-          bundle=app/build/outputs/bundle/release/app-release.aab
-          test -s "$bundle"
-          jarsigner -verify "$bundle" | grep -F 'jar verified.'
+          apk=app/build/outputs/apk/release/app-release.apk
+          test -s "$apk"
+          apksigner="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -name apksigner | sort -V | tail -n 1)"
+          "$apksigner" verify --verbose "$apk"
     artifacts:
-      - artifacts/sensebridge-phone/android/app/build/outputs/bundle/release/*.aab
+      - artifacts/sensebridge-phone/android/app/build/outputs/apk/release/*.apk
